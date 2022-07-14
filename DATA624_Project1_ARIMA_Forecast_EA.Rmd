@@ -1,0 +1,988 @@
+---
+title: "Data624 - Project 1"
+author: "Esteban Aramayo, Coffy Andrews-Guo, LeTicia Cancel, Joseph Connolly, Ian Costello"
+date: '2022-06-21'
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+  word_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE,
+                      message=FALSE,
+                      collapse = FALSE,
+                      comment = "#>" )
+```
+
+```{r echo=FALSE}
+# install from CRAN
+#install.packages("officedown")
+
+# or GitHub
+#remotes::install_github("davidgohel/officedown")
+```
+
+Required Libraries
+```{r warning=FALSE, message=FALSE}
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(fpp2)
+library(caret)
+library(RANN)
+library(VIM)
+library(ggpubr)
+library(gridExtra)
+library(forecast)
+library(writexl)
+```
+
+# Project Summary
+
+In this project for Data 624, Predictive Modeling, we were provided seemingly random, non-descript data to which we had to conduct a series of 6 forecasts of various pairs of variables.
+
+```{r}
+df <- read_excel("data.xls")
+head(df)
+```
+
+The data set does not appear to have any distinguishing labels that would indicate anything about the source nor recordings of the data set. Under normal circumstances, context about data and use case would be known and provided, as this is important for forecasting. Context can help identify appropriate methods and models that would be best suited to produce an accurate result. This follows the "no free lunch" principle, which states that in machine learning there is no best algorithm that can be used to solve all problems. Regardless, this dataset is completely for practice and exercising forecasting in an academic setting.
+
+## Data Cleaning & Imputation
+
+```{r}
+# Factoring category to get a count of the elements within dataset
+df$category <- as.factor(df$category)
+
+
+summary(df)
+writeLines("\n\n")
+str(df)
+```
+
+Upon looking at this summary, it's observed the provided data set contains 7 columns and 10,572 rows. "SeriesInd" is a column for time which can be converted to reflect an instance as such. All elements within "category" have the same amount of values, and the remaining columns all have missing values. Interestingly, columns 5-7 (Var03, Var04, Var07) all have same amount of missing values, as well as very close quartile and min/max values that are all also comparable to column 3 (Var01). On the other hand, column 4 (Var02) has values that are significantly larger of a greater magnitude. It should be noted that columns 3-7 are the predictor variables for the forecasting.
+
+#### Data Structure
+
+```{r}
+# md
+
+str(df)
+```
+
+
+## Data Exploration
+
+```{r}
+#MD
+dim(df)
+```
+
+```{r}
+#md
+summary(df)
+```
+
+##### Handling Missing Data: Impute or Delete?
+
+```{r}
+paste0(sum(is.na(df))," values missing from original set")
+```
+
+Looking at the summary generated above, columns 3-7 each have a range of 842-866 missing values, which sums to a total of 4,294 values. The dilemma is to decide whether or not it is appropriate to impute missing data, or to simply delete them. According to the plot below, generated via "VIM::aggr()", 91.81% of the data is fulfilled. Var01, Var02, Var03, Var05, and Var07 are missing about 8% of data. This seems like an insignificant amount of data that can easily be omitted from the set. Further investigation is needed to determine the next appropriate steps.
+
+An excerpt from the following paper, $\underline{The\ prevention\ and\ handling\ of\ the\ missing\ data}$, by Hyun Kang, argues when deletion is appropriate or not from the following quote: *"...if the assumption of MCAR (missing completely at random) is satisfied, a listwise deletion is known to produce unbiased estimates and conservative results. When the data do not fulfill the assumption of MCAR, listwise deletion may cause bias in the estimates of the parameters. If there is a large enough sample, where power is not an issue, and the assumption of MCAR is satisfied, the listwise deletion may be a reasonable strategy. However, when there is not a large sample, or the assumption of MCAR is not satisfied, the listwise deletion is not the optimal strategy"* [$^1$](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3668100/). By creating a shadow matrix to see a percentage (on a 0-1 scale) of missing values when all correlated among each other, this will help indicate whether or not the data is MCAR. [$^2$](https://stats.stackexchange.com/questions/172316/a-statistical-approach-to-determine-if-data-are-missing-at-random)
+
+```{r fig.width=10}
+# Plots of missing values
+
+aggr_plot <- VIM::aggr(df, col = c("navyblue", "orange"), 
+                  numbers = T, sortVars = T,
+                  labels = names(df),
+                  cex.axis = 0.7, gap = 3,
+                  ylab = c("Frequency of Missing Data", "Pattern"))
+```
+
+```{r}
+# Shadow Matrix: correlation of missing values from the dataset
+
+x <- as.data.frame(abs(is.na(df))) 
+
+y <- x[which(sapply(x, sd) >0)] # Extracts which variables are missing/NA from the dataset
+
+cor(y) # Tendency of NA when correlated among variables
+```
+
+Aside from considering values correlated with themselves, the following have no missing values upon correlation:
+
+  - Var03 has no missing values when correlated with Var05 and Var07
+  
+  - Var05 has no missing values when correlated with Var03 and Var07
+  
+  - Var07 has no missing values when correlated with Var03 and Var05
+  
+Taking these observations into consideration, it seems there appears to be bias in the data in the context of missing values. Therefore, the data is not missing completely at random, and an imputation is the appropriate step to take.
+
+##### Data Imputation & Time Conversion
+
+As stated, since the missing values are not MCAR, imputation will be utilized to represent missing values in our data set. There are numerous methods to impute data, especially in R. Within the caret package, the "preProcess()" function enables imputation and allows for users to select a method of imputation. The method "medianImpute" was chosen because of the ease and efficiency when handeling the data. This will replace all missing values with the median of a particular variable. After imputation, there are no longer any missing values. The data has also not been altered in a significant way which would compromise the integrity of the data as seen in the summary below.
+
+```{r}
+# Imputation via "medianImpute" method within "preProcess()" function via the caret package
+
+preProcess_NAdata_model <- preProcess(as.data.frame(df), method ="medianImpute")
+
+df <- predict(preProcess_NAdata_model, newdata = df)
+
+paste0(sum(is.na(df))," values missing after imputation")
+```
+
+```{r}
+summary(df)
+
+```
+
+
+After the missing data were imputed, a datetime conversion is completed upon the first column, "SeriesInd", to translate the time into a readable format and provide more context on the data itself. Here, we see the time ranges from __ to __.
+
+```{r}
+# Converting Var02 to Datetime
+#md, move the other timeseries here to replace
+# be careful of the "Datetime" variable change, as it's used later on
+df$SeriesInd <- as.integer(df$SeriesInd)
+
+
+# Originally we used this conversion for dates
+# df$SeriesInd <- as.POSIXct(df$SeriesInd, origin = "1970-01-01")
+
+# Now let's try this new conversion
+df$SeriesInd <- as.Date(df$SeriesInd, origin = "1899-12-30")
+
+
+
+
+# Renaming SeriesInd to Date to clarify purpose
+
+df <- df %>% rename("Datetime" = SeriesInd)
+summary(df)
+```
+
+##### Final susbets 
+
+```{r}
+# For forecasting later on
+#md
+
+# s01 <- df %>% filter(category == "S01")
+# s02 <- df %>% filter(category == "S02")
+# s03 <- df %>% filter(category == "S03")
+# s04 <- df %>% filter(category == "S04")
+# s05 <- df %>% filter(category == "S05")
+# s06 <- df %>% filter(category == "S06")
+
+
+
+#new subsets with data conversion
+s01_2 <- df %>% filter(category == "S01")
+s02_2 <- df %>% filter(category == "S02")
+s03_2 <- df %>% filter(category == "S03")
+s04_2 <- df %>% filter(category == "S04")
+s05_2 <- df %>% filter(category == "S05")
+s06_2 <- df %>% filter(category == "S06")
+```
+
+
+
+Create time series for each subset using the dataframe with dates
+
+```{r}
+s01_ts <- ts(s01_2[,c("Var01","Var02")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+s02_ts <- ts(s02_2[,c("Var02","Var03")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+s03_ts <- ts(s03_2[,c("Var05","Var07")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+s04_ts <- ts(s04_2[,c("Var01","Var02")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+s05_ts <- ts(s05_2[,c("Var02","Var03")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+s06_ts <- ts(s06_2[,c("Var05","Var07")], frequency = 12, start = c(2011, 5), end = c(2018, 5))
+
+
+# first_year_days <- as.numeric(as.Date("2011-05-06") - as.Date("2011-01-01"))
+# last_year_days  <- as.numeric(as.Date("2018-05-01") - as.Date("2018-01-01"))
+# 
+# 
+# s01_ts <- ts(s01_2[,c("Var01","Var02")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+# s02_ts <- ts(s02_2[,c("Var02","Var03")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+# s03_ts <- ts(s03_2[,c("Var05","Var07")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+# s04_ts <- ts(s04_2[,c("Var01","Var02")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+# s05_ts <- ts(s05_2[,c("Var02","Var03")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+# s06_ts <- ts(s06_2[,c("Var05","Var07")], frequency = 365, start = c(2011, first_year_days), end = c(2018, last_year_days))
+```
+
+
+## Time series analysis
+
+### Decomposition
+
+Let's use classical decomposition to investigate the trend, seasonal, and random components of each series.
+
+```{r}
+# S01: Var01 & Var02
+par(mfrow = c(2, 1))
+plot(decompose(s01_ts[,1]))
+plot(decompose(s01_ts[,2]))
+```
+
+```{r}
+# S02: Var02 & Var03
+plot(decompose(s02_ts[,1]))
+plot(decompose(s02_ts[,2]))
+```
+
+```{r}
+# S03: Var05 & Var07
+plot(decompose(s03_ts[,1]))
+plot(decompose(s03_ts[,2]))
+```
+
+```{r}
+# S04: Var01 & Var02
+plot(decompose(s04_ts[,1]))
+plot(decompose(s04_ts[,2]))
+```
+
+```{r}
+# S05: Var02 & Var03
+plot(decompose(s05_ts[,1]))
+plot(decompose(s05_ts[,2]))
+```
+
+```{r}
+# S06: Var05 & Var07
+plot(decompose(s06_ts[,1]))
+plot(decompose(s06_ts[,2]))
+```
+
+
+### Differencing
+
+Since all the series appear to have seasonality and some of them have trends, we will need to apply **differencing** to try to make the series stationary.
+
+
+```{r}
+# S01: Var01 & Var02
+par(mfrow = c(1, 2))
+
+s01_ts_Var01_diff <- diff(s01_ts[,1])
+s01_ts_Var02_diff <- diff(s01_ts[,2])
+
+tsdisplay(s01_ts_Var01_diff)
+tsdisplay(s01_ts_Var02_diff)
+
+```
+
+```{r}
+# S02: Var02 & Var03
+
+par(mfrow = c(1, 2))
+
+s02_ts_Var02_diff <- diff(s02_ts[,1])
+s02_ts_Var03_diff <- diff(s02_ts[,2])
+
+tsdisplay(s02_ts_Var02_diff)
+tsdisplay(s02_ts_Var03_diff)
+
+```
+
+```{r}
+# S03: Var05 & Var07
+
+par(mfrow = c(1, 2))
+
+s03_ts_Var05_diff <- diff(s03_ts[,1])
+s03_ts_Var07_diff <- diff(s03_ts[,2])
+
+tsdisplay(s03_ts_Var05_diff)
+tsdisplay(s03_ts_Var07_diff)
+
+```
+
+```{r}
+# S04: Var01 & Var02
+
+par(mfrow = c(1, 2))
+
+s04_ts_Var01_diff <- diff(s04_ts[,1])
+s04_ts_Var02_diff <- diff(s04_ts[,2])
+
+tsdisplay(s04_ts_Var01_diff)
+tsdisplay(s04_ts_Var02_diff)
+
+```
+
+```{r}
+# S05: Var02 & Var03
+
+par(mfrow = c(1, 2))
+
+s05_ts_Var02_diff <- diff(s05_ts[,1])
+s05_ts_Var03_diff <- diff(s05_ts[,2])
+
+tsdisplay(s05_ts_Var02_diff)
+tsdisplay(s05_ts_Var03_diff)
+
+```
+
+```{r}
+# S06: Var05 & Var07
+
+par(mfrow = c(1, 2))
+
+s06_ts_Var05_diff <- diff(s06_ts[,1])
+s06_ts_Var07_diff <- diff(s06_ts[,2])
+
+tsdisplay(s06_ts_Var05_diff)
+tsdisplay(s06_ts_Var07_diff)
+
+```
+
+
+## Modeling
+
+### ARIMA
+
+Because the data is skewed, we will use Box-Cox transformation to normalize the data when trying to fit an ARIMA model to the data.
+
+
+```{r fit_ARIMA_s01}
+# S01: Var01 & Var02
+
+s01_Var01_lambda <- BoxCox.lambda(s01_ts[,1])
+
+fit_ARIMA_s01_Var01 <- forecast::auto.arima(s01_ts[,1], seasonal = TRUE, stepwise = TRUE, lambda = s01_Var01_lambda)
+
+fc_ARIMA_s01_Var01 <- forecast(fit_ARIMA_s01_Var01)
+
+summary(fit_ARIMA_s01_Var01)
+
+
+
+s01_Var02_lambda <- BoxCox.lambda(s01_ts[,2])
+
+fit_ARIMA_s01_Var02 <- forecast::auto.arima(s01_ts[,2], seasonal = TRUE, stepwise = TRUE, lambda = s01_Var02_lambda)
+
+fc_ARIMA_s01_Var02 <- forecast(fit_ARIMA_s01_Var02)
+
+summary(fit_ARIMA_s01_Var02)
+
+#plot forecast
+f1 <- autoplot(fc_ARIMA_s01_Var01) + ylab("S01: Var01")
+f2 <- autoplot(fc_ARIMA_s01_Var02) + ylab("S01: Var02")
+(f1 + f2)
+```
+
+
+
+
+```{r}
+
+# S01: Var01 & Var02
+
+s01_Var01_lambda <- BoxCox.lambda(s01_ts[,1])
+
+s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(0,1,1) , lambda = s01_Var01_lambda) %>% forecast() + autoplot() + ylab("S01: Var01")
+
+
+
+fit_SARIMA_s01_Var01 <- s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(0,1,1) , lambda = s01_Var01_lambda)
+
+fc_SARIMA_s01_Var01 <- forecast(fit_SARIMA_s01_Var01)
+
+summary(fit_SARIMA_s01_Var01)
+
+
+
+s01_Var02_lambda <- BoxCox.lambda(s01_ts[,2])
+
+fit_SARIMA_s01_Var02 <- s01_ts[,2] %>% forecast::Arima(order = c(2,1,0), seasonal = c(0,1,0) , lambda = s01_Var02_lambda)
+
+fc_SARIMA_s01_Var02 <- forecast(fit_SARIMA_s01_Var02)
+
+summary(fit_SARIMA_s01_Var02)
+
+#plot forecast
+f1 <- autoplot(fc_SARIMA_s01_Var01) + ylab("S01: Var01")
+f2 <- autoplot(fc_SARIMA_s01_Var02) + ylab("S01: Var02")
+(f1 + f2)
+
+```
+
+
+
+
+```{r SARIMA_s01_Comparison}
+
+# S01: Var01 & Var02
+
+s01_Var01_lambda <- BoxCox.lambda(s01_ts[,1])
+
+s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(0,1,1) , lambda = s01_Var01_lambda) %>% forecast() %>% autoplot() + ylab("S01: Var01")
+s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(2,1,1) , lambda = s01_Var01_lambda) %>% forecast() %>% autoplot() + ylab("S01: Var01")
+s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(3,1,1) , lambda = s01_Var01_lambda) %>% forecast() %>% autoplot() + ylab("S01: Var01")
+s01_ts[,1] %>% forecast::Arima(order = c(2,1,0), seasonal = c(0,1,0) , lambda = s01_Var01_lambda) %>% forecast() %>% autoplot() + ylab("S01: Var01")
+s01_ts[,1] %>% forecast::Arima(order = c(0,1,0), seasonal = c(1,1,0) , lambda = s01_Var01_lambda) %>% forecast() %>% autoplot() + ylab("S01: Var01")
+
+```
+
+
+```{r}
+
+library(bayesforecast)
+
+fit_bayes_sarima_s01 <- bayesforecast::auto.sarima(s01_ts[,1], seasonal = TRUE, iter = 500,chains = 1)
+
+
+fit_bayes_sarima_s01
+
+```
+
+### 1) Plot series and search for possible outliers
+
+```{r}
+ggtsdisplay(s01_ts[,1])
+```
+
+### 2) Stabilize the variance by transforming the data (Box-Cox)
+```{r}
+BoxCox.lambda(s01_ts[,1])
+
+```
+Because it is close to -1, we do not need to transform the data
+
+
+### 3) Analyze the stationarity
+
+* If the data has a constant level and its ACF and PACF cancel rapidly,
+then it can be considered as stationary
+
+```{r}
+# S01: Var01 & Var02
+
+s01.Var01.sdiff <- diff(s01_ts[,1], lag = 12, differences = 1)
+ggtsdisplay(s01.Var01.sdiff)
+```
+
+
+### 4) If the series is not stationary, then we use differencing.
+
+* For non-seasonal time series, apply regular differencing 
+* For seasonal time series, we first apply seasonal differencing and once
+  autocorrelations have been stabilized, apply the regular differencing
+
+```{r}
+# S01: Var01 & Var02
+
+s01.Var01.rdiff <- diff(s01_ts[,1])
+ggtsdisplay(s01.Var01.rdiff)
+
+# do both diffencings (seasonal and non-seasonal)
+s01.Var01.rdiff.sdiff <- diff(diff(s01_ts[,1], lag = 12))
+ggtsdisplay(s01.Var01.rdiff.sdiff)
+
+
+```
+  
+  
+### 5) Identify the seasonal model 
+
+by analyzing the seasonal coefficients of the `ACF` and `PACF`
+
+```{r}
+lambda.s01.Var01 <- BoxCox.lambda(s01_ts[,1])
+
+fit1.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+forecast::autoplot(fit1.s01.Var01)  
+
+library(lmtest)
+coeftest(fit1.s01.Var01)
+
+checkresiduals(fit1.s01.Var01)
+
+ggtsdisplay(fit1.s01.Var01$residuals)
+
+```
+
+```{r}
+lambda.s01.Var01 <- BoxCox.lambda(s01_ts[,1])
+
+fit2.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+forecast::autoplot(fit2.s01.Var01)  
+
+library(lmtest)
+coeftest(fit2.s01.Var01)
+
+checkresiduals(fit2.s01.Var01)
+
+ggtsdisplay(fit2.s01.Var01$residuals)
+
+```
+
+
+```{r}
+lambda.s01.Var01 <- BoxCox.lambda(s01_ts[,1])
+
+fit3.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+forecast::autoplot(fit3.s01.Var01)  
+
+library(lmtest)
+coeftest(fit3.s01.Var01)
+
+checkresiduals(fit3.s01.Var01)
+
+ggtsdisplay(fit3.s01.Var01$residuals)
+
+```
+
+
+### 6) Identify the regular non-seasonal component
+
+* Once the seasonal model has been identified the `regular` component by exploring the ACF and PACF of the `residuals`
+
+```{r}
+
+```
+
+
+### 7) Check the `significance` of the coefficients
+
+```{r}
+summary(fit1.s01.Var01)
+summary(fit2.s01.Var01)
+summary(fit3.s01.Var01)
+```
+
+
+### 8) Analyze the residuals:
+
+* `Outlier` detection
+* Test for serial correlation (Ljung and Box test)
+* Plot the `histogram` of the residuals (Normality test)
+
+```{r}
+
+```
+
+
+### 9) Compare different models using AIC or SBC
+
+
+
+```{r}
+
+# Fit ARIMA models to Var01 & Var02
+
+lambda.s01.Var01 <- BoxCox.lambda(s01_ts[,1])
+
+fit1.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+fit2.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+fit3.s01.Var01 <- Arima(s01_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var01,
+                        include.constant = TRUE)
+
+
+summary(fit1.s01.Var01)
+summary(fit2.s01.Var01)
+summary(fit3.s01.Var01)
+
+# ----------------------------------------------------
+
+lambda.s01.Var02 <- BoxCox.lambda(s01_ts[,2])
+
+fit1.s01.Var02 <- Arima(s01_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s01.Var02,
+                        include.constant = TRUE)
+
+fit2.s01.Var02 <- Arima(s01_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var02,
+                        include.constant = TRUE)
+
+fit3.s01.Var02 <- Arima(s01_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s01.Var02,
+                        include.constant = TRUE)
+
+summary(fit1.s01.Var02)
+summary(fit2.s01.Var02)
+summary(fit3.s01.Var02)
+
+```
+
+
+
+```{r}
+
+# Forecasting S02: Var02 & Var03 with ARIMA
+
+lambda.s02.Var02 <- BoxCox.lambda(s02_ts[,1])
+
+fit1.s02.Var02 <- Arima(s02_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s02.Var02,
+                        include.constant = TRUE)
+
+fit2.s02.Var02 <- Arima(s02_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s02.Var02,
+                        include.constant = TRUE)
+
+fit3.s02.Var02 <- Arima(s02_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s02.Var02,
+                        include.constant = TRUE)
+
+
+summary(fit1.s02.Var02)
+summary(fit2.s02.Var02)
+summary(fit3.s02.Var02)
+
+# ----------------------------------------------------
+
+lambda.s02.Var03 <- BoxCox.lambda(s02_ts[,2])
+
+fit1.s02.Var03 <- Arima(s02_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s02.Var03,
+                        include.constant = TRUE)
+
+fit2.s02.Var03 <- Arima(s02_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s02.Var03,
+                        include.constant = TRUE)
+
+fit3.s02.Var03 <- Arima(s02_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s02.Var03,
+                        include.constant = TRUE)
+
+summary(fit1.s02.Var03)
+summary(fit2.s02.Var03)
+summary(fit3.s02.Var03)
+
+```
+
+
+```{r}
+
+# Forecasting S03: Var05 & Var07 with ARIMA
+
+lambda.s03.Var05 <- BoxCox.lambda(s03_ts[,1])
+
+fit1.s03.Var05 <- Arima(s03_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s03.Var05,
+                        include.constant = TRUE)
+
+fit2.s03.Var05 <- Arima(s03_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s03.Var05,
+                        include.constant = TRUE)
+
+fit3.s03.Var05 <- Arima(s03_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s03.Var05,
+                        include.constant = TRUE)
+
+
+summary(fit1.s03.Var05)
+summary(fit2.s03.Var05)
+summary(fit3.s03.Var05)
+
+# ----------------------------------------------------
+
+lambda.s03.Var07 <- BoxCox.lambda(s03_ts[,2])
+
+fit1.s03.Var07 <- Arima(s03_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s03.Var07,
+                        include.constant = TRUE)
+
+fit2.s03.Var07 <- Arima(s03_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s03.Var07,
+                        include.constant = TRUE)
+
+fit3.s03.Var07 <- Arima(s03_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s03.Var07,
+                        include.constant = TRUE)
+
+summary(fit1.s03.Var07)
+summary(fit2.s03.Var07)
+summary(fit3.s03.Var07)
+
+```
+
+
+```{r}
+
+# Forecasting S04: Var01 & Var02 with ARIMA
+
+lambda.s04.Var01 <- BoxCox.lambda(s04_ts[,1])
+
+fit1.s04.Var01 <- Arima(s04_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s04.Var01,
+                        include.constant = TRUE)
+
+fit2.s04.Var01 <- Arima(s04_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s04.Var01,
+                        include.constant = TRUE)
+
+fit3.s04.Var01 <- Arima(s04_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s04.Var01,
+                        include.constant = TRUE)
+
+
+summary(fit1.s04.Var01)
+summary(fit2.s04.Var01)
+summary(fit3.s04.Var01)
+
+# ----------------------------------------------------
+
+lambda.s04.Var02 <- BoxCox.lambda(s04_ts[,2])
+
+fit1.s04.Var02 <- Arima(s04_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s04.Var02,
+                        include.constant = TRUE)
+
+fit2.s04.Var02 <- Arima(s04_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s04.Var02,
+                        include.constant = TRUE)
+
+fit3.s04.Var02 <- Arima(s04_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s04.Var02,
+                        include.constant = TRUE)
+
+summary(fit1.s04.Var02)
+summary(fit2.s04.Var02)
+summary(fit3.s04.Var02)
+
+```
+
+
+```{r}
+
+# Forecasting S05: Var02 & Var03 with ARIMA
+
+lambda.s05.Var02 <- BoxCox.lambda(s05_ts[,1])
+
+fit1.s05.Var02 <- Arima(s05_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s05.Var02,
+                        include.constant = TRUE)
+
+fit2.s05.Var02 <- Arima(s05_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s05.Var02,
+                        include.constant = TRUE)
+
+fit3.s05.Var02 <- Arima(s05_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s05.Var02,
+                        include.constant = TRUE)
+
+
+summary(fit1.s05.Var02)
+summary(fit2.s05.Var02)
+summary(fit3.s05.Var02)
+
+# ----------------------------------------------------
+
+lambda.s05.Var03 <- BoxCox.lambda(s05_ts[,2])
+
+fit1.s05.Var03 <- Arima(s05_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s05.Var03,
+                        include.constant = TRUE)
+
+fit2.s05.Var03 <- Arima(s05_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s05.Var03,
+                        include.constant = TRUE)
+
+fit3.s05.Var03 <- Arima(s05_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s05.Var03,
+                        include.constant = TRUE)
+
+summary(fit1.s05.Var03)
+summary(fit2.s05.Var03)
+summary(fit3.s05.Var03)
+
+```
+
+
+```{r}
+
+# Forecasting S06: Var05 & Var07 with ARIMA
+
+lambda.s06.Var05 <- BoxCox.lambda(s06_ts[,1])
+
+fit1.s06.Var05 <- Arima(s06_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s06.Var05,
+                        include.constant = TRUE)
+
+fit2.s06.Var05 <- Arima(s06_ts[,1],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s06.Var05,
+                        include.constant = TRUE)
+
+fit3.s06.Var05 <- Arima(s06_ts[,1],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s06.Var05,
+                        include.constant = TRUE)
+
+
+summary(fit1.s06.Var05)
+summary(fit2.s06.Var05)
+summary(fit3.s06.Var05)
+
+# ----------------------------------------------------
+
+lambda.s06.Var07 <- BoxCox.lambda(s06_ts[,2])
+
+fit1.s06.Var07 <- Arima(s06_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(1,1,0),
+                        lambda = lambda.s06.Var07,
+                        include.constant = TRUE)
+
+fit2.s06.Var07 <- Arima(s06_ts[,2],
+                        order = c(0,1,0),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s06.Var07,
+                        include.constant = TRUE)
+
+fit3.s06.Var07 <- Arima(s06_ts[,2],
+                        order = c(0,1,1),
+                        seasonal = c(0,1,1),
+                        lambda = lambda.s06.Var07,
+                        include.constant = TRUE)
+
+summary(fit1.s06.Var07)
+summary(fit2.s06.Var07)
+summary(fit3.s06.Var07)
+
+```
+
+
+#### Auto ARIMA testing
+
+```{r}
+f_fit_s01_ARIMA_1 <- forecast(fit2.s01.Var01, h=140)
+f_fit_s01_ARIMA_2 <- forecast(fit1.s01.Var02, h=140)
+f_fit_s02_ARIMA_2 <- forecast(fit3.s02.Var03, h=140)
+f_fit_s02_ARIMA_3 <- forecast(fit2.s02.Var03, h=140)
+f_fit_s03_ARIMA_5 <- forecast(fit2.s03.Var05, h=140)
+f_fit_s03_ARIMA_7 <- forecast(fit2.s03.Var07, h=140)
+f_fit_s04_ARIMA_1 <- forecast(fit2.s04.Var01, h=140)
+f_fit_s04_ARIMA_2 <- forecast(fit3.s04.Var02, h=140)
+f_fit_s05_ARIMA_2 <- forecast(fit3.s05.Var02, h=140)
+f_fit_s05_ARIMA_3 <- forecast(fit2.s05.Var03, h=140)
+f_fit_s06_ARIMA_5 <- forecast(fit2.s06.Var05, h=140)
+f_fit_s06_ARIMA_7 <- forecast(fit3.s06.Var07, h=140)
+```
+
+
+
+
+#### Export Auto ARMIMA Predictions
+
+```{r}
+# export all predictions to excel
+write_xlsx(as.data.frame(f_fit_s01_ARIMA_1), "Project1_EA\\SARIMA_s01_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s01_ARIMA_2), "Project1_EA\\SARIMA_s01_2.xlsx")
+write_xlsx(as.data.frame(f_fit_s02_ARIMA_2), "Project1_EA\\SARIMA_s02_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s02_ARIMA_3), "Project1_EA\\SARIMA_s02_2.xlsx")
+write_xlsx(as.data.frame(f_fit_s03_ARIMA_5), "Project1_EA\\SARIMA_s03_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s03_ARIMA_7), "Project1_EA\\SARIMA_s03_2.xlsx")
+write_xlsx(as.data.frame(f_fit_s04_ARIMA_1), "Project1_EA\\SARIMA_s04_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s04_ARIMA_2), "Project1_EA\\SARIMA_s04_2.xlsx")
+write_xlsx(as.data.frame(f_fit_s05_ARIMA_2), "Project1_EA\\SARIMA_s05_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s05_ARIMA_3), "Project1_EA\\SARIMA_s05_2.xlsx")
+write_xlsx(as.data.frame(f_fit_s06_ARIMA_5), "Project1_EA\\SARIMA_s06_1.xlsx")
+write_xlsx(as.data.frame(f_fit_s06_ARIMA_7), "Project1_EA\\SARIMA_s06_2.xlsx")
+```
+
+
+
+
+
