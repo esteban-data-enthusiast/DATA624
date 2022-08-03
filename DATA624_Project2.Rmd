@@ -21,7 +21,7 @@ knitr::opts_chunk$set(echo=FALSE, warning=FALSE,
 
 # Project Summary
 
-For this project, we are tasked to predict the "potential of hydrogen" more commonly known as pH in a range of beverages. Two data sets are provided one for modeling and the other to use for predictions. The modeling data set contains 33 different features, including the target variable (`PH`). The predictor variables are all numeric except for `Brand`, which is a category. 
+For this project, we are tasked to predict the "potential of hydrogen" more commonly known as pH in a range of beverages. Two data sets are provided one for modeling and the other to use for predictions. The modeling data set contains 33 different features, including the target variable (`PH`). The predictor variables are all numeric except for `Brand Code`, which has a categorical. 
 
 ## Definition of pH
 
@@ -33,9 +33,9 @@ The pH of a solution is meant to describe its acidity or alkalinity (basic). The
 * Portions of the data exploration where assisted by the `DataExplorer` package
 * Of particular use throughout the project is the `caret` package that provides for flexible pre-processing, modeling options, and tuning controls. 
 
-### Note on repeatability
+### Code Reproducibility / Repeatability
 
-Because of how these data are structured and models created it may be necessary to repeat these steps to troubleshoot the code or scrutinize results. For this reason it is important to use `set.seed()` to provide exact conditions to reproduce these processes. For this project, the seed is set at 1234.  
+The reproducibility and repeatability of the analysis is important on building upon findings or providing comparison results. The datasets are structured and the machine learning models (classification and regression), will require a broad approach on code organizing, code reporting, and many other features.  Learning best practices for writing reproducible code is an iterative learning process on repeating steps to troubleshoot, modify, and gain insights for accurate results. The `set.seed` function is set at `1234` to provide exact conditions to reproduce these processes.   
 
 ```{r warning=FALSE, message=FALSE}
 library(readxl)
@@ -50,13 +50,13 @@ library(gridExtra)
 library(psych)
 library(tidyverse)
 library(ggplot2)
-
 library(GGally)
 library(caret)
 library(broom)
 library(kableExtra)
 library(DataExplorer)
 library(psych)
+library(randomForest)
 ```
 
 ```{r}
@@ -71,16 +71,19 @@ raw_df <- read_csv("StudentData - TO MODEL.csv") %>%
 colnames(raw_df) <- gsub(" ","",colnames(raw_df))
 ```
 
-# Data Exploration
+## Data Exploration
 
-From the start, the variable `Brand` is excluded as it is the only categorical variable which would require different operations (such as creating dummy variables) than the numeric columns. It also would seem that `Brand` would have little impact on pH of specific products. 
+The variable `Brand Code` is excluded as it is the only categorical variable which would require different operations (such as creating dummy variables) than the numeric columns. It also would seem that `Brand Code` would have little impact on pH of specific products. 
 
 Using `describe` on the remaining features provides the first glimpse of the shape of these variables. Of note are the skew and kurtosis values, which would at first blush generally indicate (or not) a normal distribution. 
 
 ```{r}
 describe(raw_df)
 ```
-## Feature Histograms
+
+## Data Visualizations
+
+### Feature Histograms
 
 Variable histograms below better illustrate the shape of the feature distributions. The `PH` distribution appears to be normal, this is a requirement for linear regressions. For the other variables, the distributions are a mix. Some appear quite normal, such as `Carb Pressure`, `Carb Temp`, `Fill Ounces`. Others are bimodel, that is having two "peaks" in the distributions such as `Balling Lvl`, `Density`, `Carb Rel`. The third category of variable are those that may or may not have rather normal distributions but also have significant outliers such as `Hyd Pressure`, `Filler Speed`. 
 
@@ -88,9 +91,11 @@ Variable histograms below better illustrate the shape of the feature distributio
 DataExplorer::plot_histogram(raw_df)
 ```
 
-## Box Plots
+### Box Plots and Outliers
 
-Using box plots will provide more insight into the outliers of these features.
+Using box plots will provide more insight into the outliers of these features. Deciding whether or not to smooth, delete, or impute outliers is a critical step in preparing data for a model. Based on these data, it is likely that the test set will also have outliers and so it may be more advantageous to keep them as is to train the model when it encounters them in the test set. 
+
+Perhaps it is better to focus on including important features, or features with more normal distributions than treating specific features for their outliers.
 
 ```{r, fig.height = 12, fig.width = 10, echo=FALSE}
 # Prepare data for ggplot
@@ -109,7 +114,9 @@ df_boxplots %>% ggplot() +
 
 ```
 
-## Correlation
+### Correlation
+
+Because of the amount of features in this data set, multicollinearity is an issue. Below, the correlation plot indicates a few features that interact with each other and the target variable. Including all these features will negatively impact the model as they are interrelated. Later the variables with correlation values over 0.75 will be removed. 
 
 ```{r,echo=FALSE, fig.height=8, fig.width=10 }
 suppressPackageStartupMessages(library(corrplot))
@@ -119,7 +126,9 @@ corrplot(correlation, 'ellipse', type = 'lower', order = 'hclust',
          col=brewer.pal(n=8, name="Dark2"))
 ```
 
-## Relationship to Target
+### Relationship to Target
+
+Another way to analyze and select features is understanding the relationship between the predictor and target variables. From these graphs, one cannot see particularly strong relationships by these graphs alone. `Filter Level` and `Pressure Vacuum` are slight exceptions with a hint of a positive relationship. Given the information from these graphs, the bimodal distributed variables should likely be removed.
 
 ```{r}
 
@@ -141,13 +150,19 @@ featurePlot(x= histData[25:32], y = histData[['PH']])
 
 ```
 
-# Data Preperation
+# Data Preparation
+
+### Near-Zero Variance
+
+Checking for variables with a near-zero variance that will not be valuable for use in the predictions, `HydPressure1` can be removed.
 
 ```{r}
 names(raw_df)[nearZeroVar(raw_df)]
 ```
 
-## Missing Data and Imputation
+### Missing Data and Imputation
+
+Making good use of the `caret` package and the `preProcess()` function, the data sets are scaled and centered, transformed via BoxCox, and missing values imputted using knn imputation process is a single steps and line of code. 
 
 ```{r, warning = FALSE, message = FALSE, echo=FALSE}
 #plot missing values using VIM package
@@ -160,6 +175,8 @@ df <- predict(preProc, as.data.frame(raw_df))
 ```
 
 ## Feature Q-Q Plots
+
+The final visualization used to determine features to model are the 'QQ' plots. More normal distributions will have plotted values along the diagonal line and are on balance more useful for predictions. There are some variables that have near-horizontal plots that will not provide much insight when used for predictions.
 
 ```{r, warning = FALSE, message = FALSE, echo=FALSE}
 qq_data <- df
@@ -178,41 +195,21 @@ yTrain <- df %>%
 head(xTrain)
 ```
 
-
-```{r, warning = FALSE, message = FALSE, echo=FALSE}
-ggplot(stack(xTrain), aes(x = ind, y = values)) +
-  geom_boxplot(color = "darkblue",
-               fill = "lightblue",
-               alpha = 0.2,
-               outlier.color = "red",
-               outlier.fill = "red",
-               outlier.alpha = 0.2,
-               notch = TRUE) + 
-  labs(title = "Boxplot of all feature variables") + 
-  scale_y_log10()
-```
-
-```{r}
-
-tooHigh <- findCorrelation(cor(xTrain), cutoff = .75)
-
-tooHigh
-```
-
-```{r}
-xTrain <- xTrain[, -tooHigh]
-trainXnnet <- xTrain[, -tooHigh]
-```
-
 # Model Building
 
-## Repeated Cross Validation 
+## Repeated Cross Validation
+
+Because the test data values are not provided, it is not to our advantage to further split the training data into another test and train set. This is because the new "test" set may contain values that the training model will need when applied later to the actual test data. To side step this problem, the models will deploy a repeated cross validation approach that will split the training data up into chunks and train/test on those chunks. 
+
+While this may yield lower model power values in the training evaluation, the reading indicates that models built in this way will have better performance when applied to actual test data.
 
 ```{r}
 ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
 ```
 
 ## Models Tested
+
+A series of models are tested based on the homework 2 problems. The models range from the simple linear regression to the more complex cubist and neural networks. A table is below that provides the full account of the performance values.
 
 ```{r}
 lm_model <- train(xTrain, yTrain$PH, method="lm", trControl=ctrl)
@@ -224,27 +221,7 @@ knn_model <- train(xTrain, yTrain$PH, method="knn", trControl=ctrl)
 knn_model
 ```
 
-```{r nnet}
 
-# Resource: Chapter 7.5 of textbook "Applied Predictive Modeling" by KJ
-
-## Create a specific candidate set of models to evaluate:
-nnetGrid <- expand.grid(.decay = c(0, 0.01, .1),
-                        .size = c(1:10),
-                        .bag = FALSE)
-
-
-nnetTune <- train(xTrain, yTrain$PH,
-                  method = "avNNet",
-                  tuneGrid = nnetGrid,
-                  trControl = ctrl,
-                  linout = TRUE,
-                  trace = FALSE,
-                  MaxNWts = 1 * (ncol(trainXnnet) + 10) + 10 + 1,
-                  maxit = 50)
-
-nnetTune
-```
 
 ```{r mars-chem}
 
@@ -326,13 +303,90 @@ cubistTuned
 
 ## Model Results
 
+  The following table indicates scores of RMSE, R-Squared, and MAE. The RMSE, or the Root Mean Square Error, is the square root of the variance of the residuals, which indicates the absolute fit of the model according to the data. In other words, how close each observed data points are to the model's predicted values. Lower values of RMSE indicate a better fit, as this is a good measure of how accurately the model predicts the response. R-squared indicates the goodness of fit for the model, and it ranges from 0 to 1. 0 being an indication that the proposed model does not improve prediction over the mean model, while 1 indicates perfect prediction. MAE, or Mean of the Abosolute Errors, is a measure of errors among paired observations within a model. This is another measuse of accuracy, and when a MAE score is generated, the lower score indicates a better performance. For our model selection, we will be consistent with the model output of R, and choose the best performing model according to the RMSE score. [RMSE, R-Squared](https://www.theanalysisfactor.com/assessing-the-fit-of-regression-models/#:~:text=As%20the%20square%20root%20of%20a%20variance%2C%20RMSE,variable.%20Lower%20values%20of%20RMSE%20indicate%20better%20fit.) [MAE](https://www.statology.org/mean-absolute-error-in-r/#:~:text=In%20statistics%2C%20the%20mean%20absolute%20error%20%28MAE%29%20is,yi%3A%20The%20observed%20value%20for%20the%20ith%20observation)
+  
+
+
+Model	                    RMSE	        Rsquared	     MAE
+
+Linear Regression         0.8095471     0.3456735     0.6256341
+KNN                       0.7342074     0.4675390     0.5395836
+MARS                      0.7494493     0.4567320     0.5437624
+SVM                       0.7060958     0.5048682     0.5126792
+CART                      0.7714252     0.4070259     0.5885329
+Stoch. Gradient Boosting  0.6212159     0.6145606     0.4581797
+*Cubist                   0.5722403     0.6731160     0.4075701*
+
+Looking at the table above, the best performing model according to the RMSE is the Cubist Model
+
+
 # Model Selection
 
+```{r message=FALSE}
+# test data
+final_test <- read_csv("StudentEvaluation- TO PREDICT.csv")
+colnames(final_test) <- gsub(" ","",colnames(final_test))
+
+head(final_test)
+```
+
+```{r}
+#aggr(final_test , col=c('green','orange'), numbers=TRUE, sortVars=TRUE, labels=names(final_test), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+```
+
+```{r}
+xTest <- final_test %>%
+  select( -PH)
+yTest <- final_test %>%
+  select(PH)
+```
 
 
+```{r}
+preProc2 <- preProcess(as.data.frame(xTest), method = c("BoxCox","center","scale", "knnImpute"))
+xTest <- predict(preProc2, as.data.frame(xTest))
+```
+
+```{r}
+df2 <- cbind(xTest, yTest)
+```
+
+```{r}
+# xTest <- df2 %>%
+#   select(-PH, -CarbVolume, -CarbPressure, -MnfFlow, -FillPressure, -HydPressure2, -FillerLevel, -FillerSpeed, -Balling, -AlchRel, -CarbRel, -BallingLvl, -PressureSetpoint, -BowlSetpoint, -MFR, -HydPressure3, -CarbTemp)
+# yTest <- df2 %>%
+#   select(PH)
+```
+
+```{r}
+df2$`Brand Code` <- NULL
+
+#final_test <- final_test %>% select(-CarbVolume, -CarbPressure, -MnfFlow, -FillPressure, -HydPressure2, -FillerLevel, -FillerSpeed, -Balling, -AlchRel, -CarbRel, -BallingLvl, -PressureSetpoint, -BowlSetpoint, -MFR, -HydPressure3, -CarbTemp)
+```
 
 
+```{r}
+# Writing Predictions
 
+final_test_pred <- predict(cubistTuned, newdata = df2)
+```
+
+```{r}
+scaled.PH <- scale(raw_df$PH, center = TRUE, scale = TRUE)
+```
+
+```{r}
+final_test_pred_orig <- final_test_pred *
+  attr(scaled.PH, 'scaled:scale') +
+  attr(scaled.PH, 'scaled:center')
+
+head(final_test_pred_orig)
+```
+
+```{r}
+write.csv(df2$PH <- final_test_pred_orig %>%  write.csv(., "project2_predictions.csv", row.names = F))
+```
 
 
 
